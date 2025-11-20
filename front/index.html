@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Coloreo de Mapas – Backtracking</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;background:#0f172a;color:#e2e8f0}
+    header{padding:12px 16px;background:#111827;border-bottom:1px solid #1f2937}
+    main{display:grid;grid-template-columns:360px 1fr;gap:16px;padding:16px;min-height:calc(100vh - 60px)}
+    h1{font-size:18px;margin:0}
+    .card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:12px}
+    label{display:block;margin:8px 0 4px}
+    textarea,select,input{width:100%;background:#0b1220;color:#e5e7eb;border:1px solid #243043;border-radius:8px;padding:8px}
+    button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:8px 12px;cursor:pointer}
+    button.secondary{background:#334155}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    #canvas{width:100%;height:100%;background:#0b1220;border:1px solid #1f2937;border-radius:12px}
+    .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+    small{color:#9ca3af}
+  </style>
+</head>
+<body>
+<header><h1>Coloreo de Mapas — Backtracking (Microservicio Python)</h1></header>
+<main>
+  <section class="card">
+    <h3>1) Mapa (grafo)</h3>
+    <label>Grafo (JSON):</label>
+    <textarea id="graphInput" rows="10"></textarea>
+    <div class="row">
+      <button id="btnSample">Cargar ejemplo</button>
+      <button id="btnMexico">Ejemplo Oaxaca (regiones)</button>
+    </div>
+
+    <h3 style="margin-top:16px;">2) Configuración</h3>
+    <label>Colores permitidos (2–5):</label>
+    <input type="number" id="kColors" min="2" max="5" value="4"/>
+    <label>Orden de selección:</label>
+    <select id="orderSel">
+      <option value="degree">Por grado (recomendado)</option>
+      <option value="natural">Natural</option>
+    </select>
+
+    <div class="row" style="margin-top:12px;">
+      <button id="btnSolve">Resolver con Backtracking</button>
+      <button id="btnClear" class="secondary">Limpiar</button>
+    </div>
+
+    <h3 style="margin-top:16px;">3) Animación</h3>
+    <div class="row">
+      <button id="btnPlay">▶ Play</button>
+      <button id="btnPause" class="secondary">⏸ Pausa</button>
+      <button id="btnStep" class="secondary">-> Paso</button>
+      <label style="margin-left:8px;">Velocidad (ms): <input type="number" id="speed" value="300" min="50" step="50"></label>
+    </div>
+
+    <div class="row" style="margin-top:12px;">
+      <button id="btnDownload">Descargar PNG</button>
+    </div>
+
+    <p><small>Tip: puedes editar el JSON a mano. Formato:
+      { "nodes": ["A","B"], "edges":[{"src":"A","dst":"B"}], "positions": {"A":[x,y], ...} }</small></p>
+    <p id="status"></p>
+  </section>
+
+  <section class="card" style="display:grid;grid-template-rows:auto 1fr;">
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <div>
+        <strong>Vista</strong> — colores de regiones y trazas (try/assign/conflict/backtrack)
+      </div>
+    </div>
+    <canvas id="canvas"></canvas>
+  </section>
+</main>
+
+<script>
+const API = "http://localhost:8000/solve";  // ajusta si lo despliegas
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+let W, H; const PAD=24;
+
+function resize(){
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = Math.floor(rect.width-2);
+  canvas.height = Math.floor(rect.height-2);
+  W = canvas.width; H = canvas.height;
+  draw();
+}
+window.addEventListener("resize", resize);
+
+// estado
+let graph = {nodes:[], edges:[], positions:{}};
+let steps = [], colors = {}, stepIdx=0, timer=null;
+let palette = ["#ef4444","#22c55e","#3b82f6","#f59e0b","#a855f7"];
+let ghost = {}; // colores parciales en animación
+let lastAction = null;
+
+function setStatus(msg){ document.getElementById("status").innerText = msg; }
+
+function layoutIfEmpty(){
+  if(!graph.positions) graph.positions = {};
+  const n = graph.nodes.length;
+  let missing = graph.nodes.filter(u => !(u in graph.positions));
+  if(missing.length===0) return;
+  const cx = W/2, cy = H/2, R = Math.min(W,H)/2 - 60;
+  missing.forEach((u,i)=>{
+    const t = 2*Math.PI*i/missing.length;
+    graph.positions[u] = [cx + R*Math.cos(t), cy + R*Math.sin(t)];
+  });
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  layoutIfEmpty();
+  // edges
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = "#475569";
+  graph.edges.forEach(e=>{
+    const [x1,y1] = graph.positions[e.src];
+    const [x2,y2] = graph.positions[e.dst];
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  });
+  // nodes
+  graph.nodes.forEach(u=>{
+    const [x,y] = graph.positions[u];
+    const r = 18;
+    let colId = (u in ghost) ? ghost[u] : (u in colors ? colors[u] : -1);
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = colId>=0 ? palette[colId] : "#0ea5e9";
+    ctx.fill(); ctx.strokeStyle="#0ea5e9"; ctx.stroke();
+    ctx.fillStyle="#0b1220"; ctx.font="bold 12px Segoe UI";
+    ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(u, x, y);
+  });
+
+  // hint acción
+  if(lastAction){
+    ctx.fillStyle="#94a3b8"; ctx.font="12px Segoe UI";
+    ctx.textAlign="left"; ctx.fillText(lastAction, 8, 16);
+  }
+}
+
+// Animación
+function applyStep(s){
+  lastAction = `${s.action.toUpperCase()} ${s.node}` + (s.color!=null?` = ${s.color}`:"");
+  if(s.partial){ ghost = {...s.partial}; }
+  if(s.action==="done"){ colors = {...s.partial}; ghost = {}; }
+  draw();
+}
+
+function play(){
+  const speed = parseInt(document.getElementById("speed").value)||300;
+  if(timer) return;
+  timer = setInterval(()=>{
+    if(stepIdx >= steps.length){ pause(); return; }
+    applyStep(steps[stepIdx++]);
+  }, speed);
+}
+function pause(){ if(timer){ clearInterval(timer); timer=null; } }
+function stepOnce(){
+  if(stepIdx < steps.length){ applyStep(steps[stepIdx++]); }
+}
+function clearAll(){
+  pause(); steps=[]; colors={}; ghost={}; stepIdx=0; lastAction=null; draw();
+}
+
+// Descargar PNG
+document.getElementById("btnDownload").onclick = ()=>{
+  const a = document.createElement("a");
+  a.href = canvas.toDataURL("image/png");
+  a.download = "mapa_coloreado.png";
+  a.click();
+};
+
+// Botones animación
+document.getElementById("btnPlay").onclick = play;
+document.getElementById("btnPause").onclick = pause;
+document.getElementById("btnStep").onclick = stepOnce;
+document.getElementById("btnClear").onclick = clearAll;
+
+// Resolver
+document.getElementById("btnSolve").onclick = async ()=>{
+  pause(); steps=[]; colors={}; ghost={}; stepIdx=0; lastAction=null; draw();
+  const k = parseInt(document.getElementById("kColors").value)||4;
+  const order = document.getElementById("orderSel").value;
+
+  setStatus("Resolviendo...");
+  try{
+    const res = await fetch(API, {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ nodes: graph.nodes, edges: graph.edges, k_colors: k, order })
+    });
+    const data = await res.json();
+    steps = data.steps || [];
+    colors = data.colors || {};
+    setStatus(data.message + `  | pasos: ${steps.length}`);
+    draw();
+  }catch(e){
+    console.error(e); setStatus("Error al resolver (revisa que el backend esté en 8000).");
+  }
+};
+
+// JSON de entrada
+const input = document.getElementById("graphInput");
+function loadFromTextarea(){
+  try{
+    const j = JSON.parse(input.value);
+    graph.nodes = j.nodes || [];
+    graph.edges = (j.edges||[]).map(e=>({src:e.src, dst:e.dst}));
+    graph.positions = j.positions || {};
+    clearAll();
+  }catch(e){ setStatus("JSON inválido."); }
+}
+input.addEventListener("change", loadFromTextarea);
+
+// Ejemplos
+document.getElementById("btnSample").onclick = ()=>{
+  input.value = JSON.stringify({
+    nodes:["A","B","C","D","E","F"],
+    edges:[{src:"A",dst:"B"},{src:"A",dst:"C"},{src:"B",dst:"C"},
+           {src:"B",dst:"D"},{src:"C",dst:"E"},{src:"D",dst:"E"},{src:"E",dst:"F"}],
+    positions:{}  // opcional; si lo dejas vacío, hace layout circular
+  }, null, 2);
+  loadFromTextarea();
+};
+document.getElementById("btnMexico").onclick = ()=>{
+  // Mini “regiones Oaxaca” de ejemplo (ficticio para la práctica)
+  input.value = JSON.stringify({
+    nodes:["OAX","XOXO","ATZ","SLC","SJA","STA"],
+    edges:[
+      {"src":"OAX","dst":"XOXO"},{"src":"OAX","dst":"ATZ"},{"src":"OAX","dst":"SLC"},
+      {"src":"XOXO","dst":"SLC"},{"src":"SLC","dst":"SJA"},{"src":"ATZ","dst":"SJA"},
+      {"src":"SJA","dst":"STA"}
+    ],
+    positions:{}
+  }, null, 2);
+  loadFromTextarea();
+};
+
+// init
+document.getElementById("btnSample").click();
+resize();
+</script>
+</body>
+</html>
